@@ -145,7 +145,7 @@ export default {
         query = `${query} ${logicalOperator} `;
       }
       const formattedValue = /\D/.test(value) && value != "null" ? `'${value}'` : value;
-      textarea.value = `${query}[${field}${operator}${formattedValue}]`;
+      textarea.value = `${query}[\`${field}\`${operator}${formattedValue}]`;
 
     },
     async refreshTable() {

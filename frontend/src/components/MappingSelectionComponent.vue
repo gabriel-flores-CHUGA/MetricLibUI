@@ -73,14 +73,31 @@ export default {
   data() {
     return {
       selectedUseCase: "ECG diagnosis",
-      useCases: ["ECG diagnosis"],
+      useCases: ["ECG diagnosis", "Mammography"],
       mapping: {},
       showOverlay: false,
       pendingField: null,
       selectedTargetField: null,
       warningMessage: "",
-      targetFieldOptions: ["age", "sex", "height", "weight", "manufacturer", "nurse", "site", "device", "model_input", "ethnicity", "created_at", "label", "other"]
     };
+  },
+  computed: {
+    targetFieldOptions() {
+      const common = ["model_input", "label", "other"];
+      if (this.selectedUseCase === "Mammography") {
+        return [
+          "age", "sex", "breast_side", "view_position", "breast_density",
+          "breast_thickness", "compression_force", "implants_present",
+          "detector_type", "manufacturer", "machine_model",
+          ...common,
+        ];
+      }
+      return [
+        "age", "sex", "height", "weight", "manufacturer", "nurse", "site",
+        "device", "ethnicity", "created_at",
+        ...common,
+      ];
+    },
   },
   watch: {
     cols: {
@@ -88,7 +105,11 @@ export default {
       handler(newCols) {
         this.autoMapMatchingFields(newCols);
       }
-    }
+    },
+    selectedUseCase() {
+      this.mapping = {};
+      this.autoMapMatchingFields(this.cols);
+    },
   },
   methods: {
     autoMapMatchingFields(cols) {

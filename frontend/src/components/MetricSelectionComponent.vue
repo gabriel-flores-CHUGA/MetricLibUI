@@ -141,15 +141,16 @@ export default {
         },
         Representativeness: {
           variety: {
-            "variety in demographics": [
-              "variety_age",
-              "variety_sex",
-              "variety_height",
-              "variety_weight",
-            ],
+            "variety in demographics": ["patients"],
             "variety in data sources": [
               "variety_device",
               "variety_site",
+              "variety_detector_type",
+              "variety_machine_model",
+              "variety_view_position",
+              "variety_breast_side",
+              "variety_breast_thickness",
+              "variety_compression_force",
             ],
           },
           "depth of data": {
@@ -184,6 +185,16 @@ export default {
         },
       },
       additionalMerged: false,
+      metricGroups: {
+        patients: [
+          "variety_age",
+          "variety_sex",
+          "variety_height",
+          "variety_weight",
+          "variety_breast_density",
+          "variety_implants_present",
+        ],
+      },
     };
   },
   computed: {
@@ -263,8 +274,9 @@ export default {
           this.additionalMerged = true;
         }
       
+        const itemNames = this.metricGroups[item] ?? [item];
         const metric_values = (metrics.value ?? metrics).filter(
-          entry => entry?.name === item
+          entry => itemNames.includes(entry?.name)
         );
       
         const allDescriptions = new Set();
@@ -329,7 +341,7 @@ export default {
         ` : '';
 
         const figures = this.report.charts.filter(
-          entry => entry?.name === item
+          entry => itemNames.includes(entry?.name)
         );
 
         if (Array.isArray(figures) && figures.length > 0) {

@@ -62,9 +62,9 @@ def dataset_key(name: str) -> str:
 def load_table_with_fallback(primary_table: str, fallback_table: str) -> pd.DataFrame:
     """Load primary DuckDB table, fallback to alternate table if missing."""
     try:
-        return con.execute(f"SELECT * FROM {primary_table}").df()
+        return con.execute(f'SELECT * FROM "{primary_table}"').df()
     except duckdb.Error:
-        return con.execute(f"SELECT * FROM {fallback_table}").df()
+        return con.execute(f'SELECT * FROM "{fallback_table}"').df()
 
 
 def sanitize_metadata_for_duckdb(df: pd.DataFrame) -> pd.DataFrame:
@@ -262,8 +262,12 @@ async def create_dataset(request: DatasetRequest):
 
     con.register(request.name, df)
 
-    dataset = CsvDataset(name=request.name, df=df, mapping=request.mapping)
-    metadata_df = sanitize_metadata_for_duckdb(dataset.get_metadata())
+    meta_parts = {
+        (src if role in ("other", "label") else role): df[src]
+        for src, role in request.mapping.items()
+        if src in df.columns
+    }
+    metadata_df = sanitize_metadata_for_duckdb(pd.DataFrame(meta_parts, index=df.index))
 
     con.register(
         f"{request.name}_mapping",
@@ -301,10 +305,10 @@ async def get_dataset(name: str, query: str, mapping: str):
     query_str = process_query(query)
 
     metadata_df_processed = con.execute(
-        f"SELECT * FROM {key}_metadata_processed_base"
+        f'SELECT * FROM "{key}_metadata_processed_base"'
     ).df()
 
-    labels_df = con.execute(f"SELECT * FROM {key}_labels_base").df()
+    labels_df = con.execute(f'SELECT * FROM "{key}_labels_base"').df()
 
     if query_str.strip() and query_str != "":
         metadata_df_processed = metadata_df_processed[
@@ -317,7 +321,7 @@ async def get_dataset(name: str, query: str, mapping: str):
     con.register(f"{key}_metadata_processed", metadata_df_processed)
     con.register(f"{key}_labels", labels_df)
 
-    mapping_df = con.execute(f"SELECT * FROM {key}_mapping").df()
+    mapping_df = con.execute(f'SELECT * FROM "{key}_mapping"').df()
 
     metadata_df_processed.insert(0, "idx", metadata_df_processed.index)
 
@@ -345,9 +349,10 @@ async def get_dataset(name: str, query: str, mapping: str):
 def process_query(query):
     query_str = query.replace(" AND ", " & ").replace(" OR ", " | ")
     query_str = query_str.replace("[", "").replace("]", "").replace("\xa0", " ")
+    query_str = re.sub(r"`([^`]+)`\s*==\s*null", r"`\1` != `\1`", query_str)
+    query_str = re.sub(r"`([^`]+)`\s*!=\s*null", r"`\1` == `\1`", query_str)
     query_str = re.sub(r"(\w+)\s*==\s*null", r"\1 != \1", query_str)
     query_str = re.sub(r"(\w+)\s*!=\s*null", r"\1 == \1", query_str)
-
     return query_str
 
 
@@ -447,8 +452,8 @@ async def create_report(request: ReportRequest):
     for i, name in enumerate(request.dataset_names):
         key = dataset_key(name)
         n_label_targets = sum(1 for v in request.mappings[i].values() if v == "label")
-        metadata_df = con.execute(f"SELECT * FROM {key}").df()
-        labels_df = con.execute(f"SELECT * FROM {key}_labels_base").df()
+        metadata_df = con.execute(f'SELECT * FROM "{key}"').df()
+        labels_df = con.execute(f'SELECT * FROM "{key}_labels_base"').df()
         print(f"Loaded dataset {name} with {len(metadata_df)} rows.")
         if request.queries and i < len(request.queries):
             query_str = process_query(request.queries[i])
@@ -498,7 +503,7 @@ async def create_report(request: ReportRequest):
             ]
 
         processed_metadata_df = con.execute(
-            f"SELECT * FROM {key}_metadata_processed"
+            f'SELECT * FROM "{key}_metadata_processed"'
         ).df()
         datasets.append(
             CsvDataset(
@@ -693,10 +698,40 @@ async def create_report(request: ReportRequest):
                 dataset_name=request.dataset_names[i],
             )
 
+        for mamm_cont in ["breast_thickness", "compression_force"]:
+            if mamm_cont in request.mappings[i].values():
+                report.add_metric(
+                    name=f"variety_{mamm_cont}",
+                    metric_name="IQR",
+                    metric_config={"column": mamm_cont},
+                    dataset_name=request.dataset_names[i],
+                )
+
+        for mamm_cat in [
+            "breast_side", "view_position", "breast_density",
+            "implants_present", "detector_type", "machine_model",
+        ]:
+            if mamm_cat in request.mappings[i].values():
+                src_col = [k for k, v in request.mappings[i].items() if v == mamm_cat][0]
+                report.add_metric(
+                    name=f"variety_{mamm_cat}",
+                    metric_name="HillNumbers",
+                    metric_config={
+                        "column": mamm_cat,
+                        "q": 2,
+                        "types": datasets[i].df[src_col].unique().tolist(),
+                    },
+                    dataset_name=request.dataset_names[i],
+                )
+
         feature_columns = [
             v
             for k, v in request.mappings[i].items()
-            if v in ["sex", "device", "site", "ethnicity", "nurse"]
+            if v in [
+                "sex", "device", "site", "ethnicity", "nurse",
+                "breast_side", "view_position", "breast_density",
+                "implants_present", "detector_type", "machine_model", "manufacturer",
+            ]
         ]
 
         if len(feature_columns) > 0 and "label" in request.mappings[i].values():
@@ -753,16 +788,6 @@ async def create_report(request: ReportRequest):
             chart_config={"field": "manufacturer"},
         )
 
-    if all(
-        "model_input" in request.mappings[i].values()
-        for i in range(len(request.mappings))
-    ):
-        report.add_chart(
-            name="sample_entropy",
-            chart_type="continuous_bar_chart",
-            chart_config={"field": "sample_entropy", "n_buckets": 10},
-        )
-
     if all("site" in mapping.values() for mapping in request.mappings):
         report.add_chart(
             name="variety_site",
@@ -798,6 +823,25 @@ async def create_report(request: ReportRequest):
             chart_config={"field": "created_at"},
         )
 
+    for mamm_cat in [
+        "breast_side", "view_position", "breast_density",
+        "implants_present", "detector_type", "machine_model",
+    ]:
+        if all(mamm_cat in m.values() for m in request.mappings):
+            report.add_chart(
+                name=f"variety_{mamm_cat}",
+                chart_type="categorical_bar_chart",
+                chart_config={"field": mamm_cat},
+            )
+
+    for mamm_cont in ["breast_thickness", "compression_force"]:
+        if all(mamm_cont in m.values() for m in request.mappings):
+            report.add_chart(
+                name=f"variety_{mamm_cont}",
+                chart_type="continuous_bar_chart",
+                chart_config={"field": mamm_cont},
+            )
+
     if all("label" in mapping.values() for mapping in request.mappings):
         report.add_chart(
             name="class_balance",
@@ -820,7 +864,7 @@ async def create_report(request: ReportRequest):
         key = dataset_key(dataset.name)
         sanitized = sanitize_metadata_for_duckdb(dataset.metadata)
         con.register(f"{key}_metadata_processed", sanitized)
-        base_df = con.execute(f"SELECT * FROM {key}_metadata_processed_base").df()
+        base_df = con.execute(f'SELECT * FROM "{key}_metadata_processed_base"').df()
         new_cols = [c for c in sanitized.columns if c not in base_df.columns]
         if new_cols:
             for col in new_cols:
@@ -854,11 +898,8 @@ async def get_scores(index):
 @app.get("/api/image")
 def get_image(index: str, name: str, mapping: str, use_case: str = None):
     metadata_df = metadata_df = con.execute(
-        f"SELECT * FROM {name.replace('.csv', '')}"
+        f'SELECT * FROM "{name.replace(".csv", "")}"'
     ).df()
-
-    if use_case != "ECG diagnosis":
-        raise ValueError("Unsupported use case for image retrieval")
 
     mapping = json.loads(mapping)
     model_input_col = list(mapping.keys())[list(mapping.values()).index("model_input")]
@@ -869,19 +910,22 @@ def get_image(index: str, name: str, mapping: str, use_case: str = None):
             status_code=404, content={"error": f"File {name}.csv not found."}
         )
 
-    x = wfdb.rdsamp(
-        os.path.join(DATA_DIR, metadata_df[model_input_col].iloc[int(index)])
-    )[0].T
-
-    ecg_plot.plot_12(x, sample_rate=x.shape[1] / 10)
-
-    fig = plt.gcf()
-
-    # Render to PNG in memory
+    record_path = os.path.join(DATA_DIR, metadata_df[model_input_col].iloc[int(index)])
     buf = io.BytesIO()
-    FigureCanvas(fig).print_png(buf)
-    plt.close(fig)
+
+    try:
+        x = wfdb.rdsamp(record_path)[0].T
+        ecg_plot.plot_12(x, sample_rate=x.shape[1] / 10)
+        fig = plt.gcf()
+        FigureCanvas(fig).print_png(buf)
+        plt.close(fig)
+    except Exception:
+        img = mpimg.imread(record_path)
+        fig, ax = plt.subplots()
+        ax.imshow(img, cmap="gray" if img.ndim == 2 else None)
+        ax.axis("off")
+        FigureCanvas(fig).print_png(buf)
+        plt.close(fig)
 
     img_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
     return {"image_base64": img_base64}
