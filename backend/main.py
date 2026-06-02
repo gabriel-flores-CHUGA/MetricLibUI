@@ -454,13 +454,17 @@ async def create_report(request: ReportRequest):
         n_label_targets = sum(1 for v in request.mappings[i].values() if v == "label")
         metadata_df = con.execute(f'SELECT * FROM "{key}"').df()
         labels_df = con.execute(f'SELECT * FROM "{key}_labels_base"').df()
+        processed_metadata_df = con.execute(
+            f'SELECT * FROM "{key}_metadata_processed_base"'
+        ).df()
         print(f"Loaded dataset {name} with {len(metadata_df)} rows.")
         if request.queries and i < len(request.queries):
             query_str = process_query(request.queries[i])
             if query_str.strip() and query_str != "":
-                metadata_df = metadata_df[metadata_df.eval(query_str)]
-                common_idx = metadata_df.index.intersection(labels_df.index)
+                processed_metadata_df = processed_metadata_df[processed_metadata_df.eval(query_str)]
+                common_idx = processed_metadata_df.index.intersection(labels_df.index).intersection(metadata_df.index)
                 metadata_df = metadata_df.loc[common_idx]
+                processed_metadata_df = processed_metadata_df.loc[common_idx]
                 labels_df = labels_df.loc[common_idx]
 
         if labels_df.empty:
@@ -502,9 +506,6 @@ async def create_report(request: ReportRequest):
                 for value in labels_df.iloc[:, 0].tolist()
             ]
 
-        processed_metadata_df = con.execute(
-            f'SELECT * FROM "{key}_metadata_processed"'
-        ).df()
         datasets.append(
             CsvDataset(
                 df=metadata_df,
