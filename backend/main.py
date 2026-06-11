@@ -126,13 +126,16 @@ class CsvDataset(Dataset):
         row = self.df.iloc[idx].to_dict()
 
         result = {}
-        label_keys = [k for k, v in self.mapping.items() if v == "label"]
-        labels = torch.tensor(
-            pd.to_numeric(
-                pd.Series([row.get(k) for k in label_keys]), errors="coerce"
-            ).to_numpy(dtype=np.float32),
-            dtype=torch.float32,
-        )
+        if self.labels is not None:
+            labels = self.labels[idx]
+        else:
+            label_keys = [k for k, v in self.mapping.items() if v == "label"]
+            labels = torch.tensor(
+                pd.to_numeric(
+                    pd.Series([row.get(k) for k in label_keys]), errors="coerce"
+                ).to_numpy(dtype=np.float32),
+                dtype=torch.float32,
+            )
         for value, key in self.mapping.items():
             if key == "other" or key == "label":
                 field = row.get(value)
@@ -283,6 +286,11 @@ async def create_dataset(request: DatasetRequest):
         if label_columns
         else pd.DataFrame({"_label": [None] * len(df)})
     )
+    if len(label_columns) == 1:
+        col = label_columns[0]
+        if not pd.api.types.is_numeric_dtype(labels_df[col]):
+            codes, _ = pd.factorize(labels_df[col])
+            labels_df[col] = codes
     con.register(f"{request.name}_labels", labels_df)
     con.register(f"{request.name}_labels_base", labels_df)
     numeric_cols = metadata_df.select_dtypes(include=[np.number]).columns
@@ -530,7 +538,7 @@ async def create_report(request: ReportRequest):
             else:
                 report.add_metric(
                     name=f"class_balance",
-                    metric_name="MultiLabelGeneralizedImbalanceRatio",
+                    metric_name="MultiClassGeneralizedImbalanceRatio",
                     metric_config={"column": "labels"},
                     dataset_name=request.dataset_names[i],
                 )
@@ -708,14 +716,16 @@ async def create_report(request: ReportRequest):
                     dataset_name=request.dataset_names[i],
                 )
 
+        mamm_cat_name_overrides = {"detector_type": "device"}
         for mamm_cat in [
             "breast_side", "view_position", "breast_density",
             "implants_present", "detector_type", "machine_model",
         ]:
             if mamm_cat in request.mappings[i].values():
                 src_col = [k for k, v in request.mappings[i].items() if v == mamm_cat][0]
+                metric_name = mamm_cat_name_overrides.get(mamm_cat, mamm_cat)
                 report.add_metric(
-                    name=f"variety_{mamm_cat}",
+                    name=f"variety_{metric_name}",
                     metric_name="HillNumbers",
                     metric_config={
                         "column": mamm_cat,
@@ -824,13 +834,15 @@ async def create_report(request: ReportRequest):
             chart_config={"field": "created_at"},
         )
 
+    mamm_cat_name_overrides = {"detector_type": "device"}
     for mamm_cat in [
         "breast_side", "view_position", "breast_density",
         "implants_present", "detector_type", "machine_model",
     ]:
         if all(mamm_cat in m.values() for m in request.mappings):
+            chart_name = mamm_cat_name_overrides.get(mamm_cat, mamm_cat)
             report.add_chart(
-                name=f"variety_{mamm_cat}",
+                name=f"variety_{chart_name}",
                 chart_type="categorical_bar_chart",
                 chart_config={"field": mamm_cat},
             )

@@ -141,16 +141,22 @@ export default {
         },
         Representativeness: {
           variety: {
-            "variety in demographics": ["patients"],
+            "variety in demographics": [
+              "variety_age",
+              "variety_sex",
+              "variety_height",
+              "variety_weight",
+              "variety_breast_density",
+              "variety_implants_present",
+              "variety_breast_side",
+              "variety_breast_thickness",
+            ],
             "variety in data sources": [
               "variety_device",
               "variety_site",
-              "variety_detector_type",
-              "variety_machine_model",
               "variety_view_position",
-              "variety_breast_side",
-              "variety_breast_thickness",
               "variety_compression_force",
+              "variety_machine_model",
             ],
           },
           "depth of data": {
@@ -185,19 +191,22 @@ export default {
         },
       },
       additionalMerged: false,
-      metricGroups: {
-        patients: [
-          "variety_age",
-          "variety_sex",
-          "variety_height",
-          "variety_weight",
-          "variety_breast_density",
-          "variety_implants_present",
-        ],
-      },
+      metricGroups: {},
     };
   },
   computed: {
+    reportMetricNames() {
+      const names = new Set();
+      const metrics = this.report?.metrics;
+      if (metrics) {
+        const list = metrics.value ?? metrics;
+        if (Array.isArray(list)) list.forEach(e => e?.name && names.add(e.name));
+      }
+      if (Array.isArray(this.report?.charts)) {
+        this.report.charts.forEach(e => e?.name && names.add(e.name));
+      }
+      return names;
+    },
     rawSubData() {
       const topLevel = this.metricsData[this.activeTopTab];
       return topLevel?.[this.activeSubTab];
@@ -213,9 +222,16 @@ export default {
       return [];
     },
     columns() {
-      if (this.isDirectList) return [this.rawSubData];
+      const filterByReport = (items) => {
+        if (!this.report || this.reportMetricNames.size === 0) return items;
+        return items.filter(item => {
+          const names = this.metricGroups[item] ?? [item];
+          return names.some(n => this.reportMetricNames.has(n));
+        });
+      };
+      if (this.isDirectList) return [filterByReport(this.rawSubData)];
       if (typeof this.rawSubData === "object" && this.rawSubData !== null) {
-        return Object.values(this.rawSubData);
+        return Object.values(this.rawSubData).map(filterByReport);
       }
       return [];
     },
