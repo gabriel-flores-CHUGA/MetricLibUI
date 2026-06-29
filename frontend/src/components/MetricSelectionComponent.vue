@@ -96,6 +96,8 @@ export default {
           "human induced error",
           "completeness",
           "source credibility",
+          "segmentation",
+          "CT quality"
         ],
         Timeliness: ["timeliness"],
         Representativeness: [
@@ -132,6 +134,8 @@ export default {
             traceability: [],
             "data poisoning": [],
           },
+          "segmentation": ["dice_coefficient","intersection_over_union","hausdorff_distance","hausdorff_distance95"],
+          "CT quality": ["image_entropy","mean_gradient_magnitude_scale","task_transfer_function50","task_transfer_function10","total_power_noise_power_spectrum", "entropy_noise_power_spectrum"],
         },
         Timeliness: {
           timeliness: {
@@ -150,6 +154,16 @@ export default {
               "variety_implants_present",
               "variety_breast_side",
               "variety_breast_thickness",
+              "variety_tobacco",
+              "variety_alcohol",
+              "variety_corticoids",
+              "variety_sedentary",
+              "variety_physical_activity",
+              "variety_diabetes",
+              "variety_osteoporosis",
+              "variety_hyperparathyroidism",
+              "variety_early_monopause",
+              "variety_lordosis_cyphosis"
             ],
             "variety in data sources": [
               "variety_device",

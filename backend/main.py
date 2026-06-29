@@ -8,6 +8,7 @@ from typing import List, Optional
 
 import matplotlib
 import torch
+import SimpleITK as sitk
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -116,7 +117,10 @@ class CsvDataset(Dataset):
                 for label in labels
             ]
         super().__init__(name, metadata_df_processed, labels)
+        # add "idx" column to apply specific metrics
+        df["idx"] = labels
         self.df = df
+        mapping["idx"] = "idx"
         self.mapping = mapping
 
     def __len__(self):
@@ -146,33 +150,68 @@ class CsvDataset(Dataset):
 
         if "model_input" not in self.mapping.values():
             return None, labels, result
-
-        try:
-            x = wfdb.rdsamp(
-                os.path.join(
-                    DATA_DIR,
-                    row[
-                        list(self.mapping.keys())[
-                            list(self.mapping.values()).index("model_input")
-                        ]
-                    ],
-                )
-            )[0].T
-        except Exception as e:
+        
+        
+        ### load nii.gz images
+        
+        # Get path file
+        model_input_col = list(self.mapping.keys())[
+            list(self.mapping.values()).index("model_input")
+        ]
+        img_path = row.get(model_input_col)
+        img_path = os.path.join(DATA_DIR, img_path)
+        
+        if ".nii.gz" in img_path:
+        
+            # Test if NIFTI file
+            img = sitk.ReadImage(img_path)
+            img_np = sitk.GetArrayFromImage(img).astype(np.float32)
+            x = torch.from_numpy(img_np)
+            
+            # paths segmentations 
+            
             model_input_col = list(self.mapping.keys())[
-                list(self.mapping.values()).index("model_input")
+                list(self.mapping.values()).index("path_segmentation_1")
             ]
-            img_path = row.get(model_input_col)
-            img_path = os.path.join(DATA_DIR, img_path)
-            img = mpimg.imread(img_path)
-            if img.ndim == 2:
-                img = img[:, :, None]
-            img_chw = np.transpose(img, (2, 0, 1)).astype(np.float32)
-            x = torch.from_numpy(img_chw)
+            seg1_path = row.get(model_input_col)
+            seg1_path = os.path.join(DATA_DIR, seg1_path)
+            
+            model_input_col = list(self.mapping.keys())[
+                list(self.mapping.values()).index("path_segmentation_2")
+            ]
+            seg2_path = row.get(model_input_col)
+            seg2_path = os.path.join(DATA_DIR, seg2_path)
+            seg1 = sitk.GetArrayFromImage(sitk.ReadImage(seg1_path))
+            seg2 = sitk.GetArrayFromImage(sitk.ReadImage(seg2_path))
+            
+            y = torch.tensor([seg1, seg2])
+            
+        else:
+            try:
+                x = wfdb.rdsamp(
+                    os.path.join(
+                        DATA_DIR,
+                        row[
+                            list(self.mapping.keys())[
+                                list(self.mapping.values()).index("model_input")
+                            ]
+                        ],
+                    )
+                )[0].T
+            except Exception as e:
+                model_input_col = list(self.mapping.keys())[
+                    list(self.mapping.values()).index("model_input")
+                ]
+                img_path = os.path.join(DATA_DIR, img_path)
+                img = mpimg.imread(img_path)
+                if img.ndim == 2:
+                    img = img[:, :, None]
+                img_chw = np.transpose(img, (2, 0, 1)).astype(np.float32)
+                x = torch.from_numpy(img_chw)
 
         return (
             x,
-            labels,
+            y,
             result,
         )
 
@@ -550,16 +589,192 @@ async def create_report(request: ReportRequest):
                 metric_config={"column": "sex", "q": 2, "types": [0, 1]},
                 dataset_name=request.dataset_names[i],
             )
-
-        if "age" in request.mappings[i].values():
+            
+        if "path_segmentation_1" in request.mappings[i].values() and "path_segmentation_2" in request.mappings[i].values():
+            dict_config = {}
+            if request.use_case == "AMEDEEIA":
+                dict_config = {'seg1_origin' : 'seg_CF_origin', 
+                'seg1_spacing':'seg_CF_spacing', 
+                'seg1_direction':'seg_CF_direction',
+                'seg2_origin' : 'seg_GK_origin', 
+                'seg2_spacing':'seg_GK_spacing', 
+                'seg2_direction':'seg_GK_direction'}
+            elif request.use_case == "CHAOS":
+                dict_config = {'seg1_origin' : 'seg_nnInteractive_origin', 
+               'seg1_spacing':'seg_nnInteractive_spacing', 
+               'seg1_direction':'seg_nnInteractive_direction',
+               'seg2_origin' : 'seg_TotalSegmentator_origin', 
+               'seg2_spacing':'seg_TotalSegmentator_spacing', 
+               'seg2_direction':'seg_TotalSegmentator_direction'}
+            
+            if dict_config != {}:
+                report.add_metric(
+                    name=f"dice_coefficient",
+                    metric_name="DICESimilarityCoefficient",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"intersection_over_union",
+                    metric_name="IntersectionOverUnion",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance",
+                    metric_name="HausdorffDistance",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance95",
+                    metric_name="HausdorffDistance95",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"dice_coefficient",
+                    metric_name="DICEMean",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"dice_coefficient",
+                    metric_name="DICEMedian",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"intersection_over_union",
+                    metric_name="IntersectionOverUnionMean",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"intersection_over_union",
+                    metric_name="IntersectionOverUnionMedian",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance",
+                    metric_name="HausdorffDistanceMean",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance",
+                    metric_name="HausdorffDistanceMedian",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance95",
+                    metric_name="HausdorffDistance95Mean",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance95",
+                    metric_name="HausdorffDistance95Median",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+            
+        if "tobacco" in request.mappings[i].values():
             report.add_metric(
-                name=f"variety_age",
+                name=f"variety_tobacco",
                 metric_name="IQR",
                 metric_config={
-                    "column": "age",
+                    "column": "tobacco",
                 },
                 dataset_name=request.dataset_names[i],
             )
+            
+        if "alcohol" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_alcohol",
+                metric_name="IQR",
+                metric_config={
+                    "column": "alcohol",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "corticoids" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_corticoids",
+                metric_name="IQR",
+                metric_config={
+                    "column": "corticoids",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "sedentary" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_sedentary",
+                metric_name="IQR",
+                metric_config={
+                    "column": "sedentary",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "physical_activity" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_physical_activity",
+                metric_name="IQR",
+                metric_config={
+                    "column": "physical_activity",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "diabetes" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_diabetes",
+                metric_name="IQR",
+                metric_config={
+                    "column": "diabetes",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "osteoporosis" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_osteoporosis",
+                metric_name="IQR",
+                metric_config={
+                    "column": "osteoporosis",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "hyperparathyroidism" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_hyperparathyroidism",
+                metric_name="IQR",
+                metric_config={
+                    "column": "hyperparathyroidism",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+            
+            
+            
 
             report.add_metric(
                 name=f"variety_age",
@@ -570,6 +785,27 @@ async def create_report(request: ReportRequest):
                 dataset_name=request.dataset_names[i],
             )
 
+        if "early_monopause" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_early_monopause",
+                metric_name="IQR",
+                metric_config={
+                    "column": "early_monopause",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "lordosis_cyphosis" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_lordosis_cyphosis",
+                metric_name="IQR",
+                metric_config={
+                    "column": "lordosis_cyphosis",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        
         if "height" in request.mappings[i].values():
             report.add_metric(
                 name=f"variety_height",
@@ -676,6 +912,53 @@ async def create_report(request: ReportRequest):
                     metric_config={},
                     dataset_name=request.dataset_names[i],
                 )
+                
+            if request.use_case == "AMEDEEIA" or request.use_case == "CHAOS":
+                # CT quality
+                
+                report.add_metric(
+                    name=f"image_entropy",
+                    metric_name="ImageEntropy3D",
+                    metric_config=None,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"mean_gradient_magnitude_scale",
+                    metric_name="MeanGradientMagnitudeScale",
+                    metric_config=None,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"task_transfer_function50",
+                    metric_name="TaskTransferFunction50",
+                    metric_config=None,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"task_transfer_function10",
+                    metric_name="TaskTransferFunction10",
+                    metric_config=None,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"entropy_noise_power_spectrum",
+                    metric_name="Entropy_NoisePowerSpectrum3D",
+                    metric_config=None,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"total_power_noise_power_spectrum",
+                    metric_name="TotalPower_NoisePowerSpectrum3D",
+                    metric_config=None,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                
 
         if "created_at" in request.mappings[i].values():
             report.add_metric(
@@ -752,6 +1035,25 @@ async def create_report(request: ReportRequest):
                 metric_config={"feature_columns": feature_columns},
                 dataset_name=request.dataset_names[i],
             )
+            
+        if request.use_case == "AMEDEEIA" or request.use_case == "CHAOS":
+        
+            feature_columns = [
+                v
+                for k, v in request.mappings[i].items()
+                if v in [
+                    "age", "tobacco", "alcohol", "corticoids", "sedentary", "physical_activity","diabetes","osteoporosis",
+                    "hyperparathyroidism", "early_menopause", "lordosis_cyphosis",
+                ]
+            ]
+
+            if len(feature_columns) > 0 and "label" in request.mappings[i].values():
+                report.add_metric(
+                    name="correlations",
+                    metric_name="PearsonCorrelation",
+                    metric_config={"feature_columns": feature_columns},
+                    dataset_name=request.dataset_names[i],
+                )
 
         report.add_metric(
             name="metadata_completeness",
@@ -777,6 +1079,14 @@ async def create_report(request: ReportRequest):
                     metric_config={},
                     dataset_name=request.dataset_names[i],
                 )
+                
+    # DICE chart test
+    # if "path_segmentation_1" in request.mappings[i].values() and "path_segmentation_2" in request.mappings[i].values():
+    #     report.add_chart(
+    #         name="dice_coefficient",
+    #         chart_type="continuous_bar_chart",
+    #         chart_config={"field": "DICESimilarityCoefficient"},
+    #     )
 
     if all("weight" in mapping.values() for mapping in request.mappings):
         report.add_chart(
@@ -819,6 +1129,77 @@ async def create_report(request: ReportRequest):
             chart_type="continuous_bar_chart",
             chart_config={"field": "age"},
         )
+        
+    if all("tobacco" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_tobacco",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "tobacco"},
+        )
+        
+    if all("alcohol" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_alcohol",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "alcohol"},
+        )
+        
+    if all("corticoids" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_corticoids",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "corticoids"},
+        )    
+        
+        
+    if all("sedentary" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_sedentary",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "sedentary"},
+        )  
+        
+    if all("physical_activity" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_physical_activity",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "physical_activity"},
+        )  
+        
+    if all("diabetes" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_diabetes",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "diabetes"},
+        )
+        
+    if all("osteoporosis" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_osteoporosis",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "osteoporosis"},
+        )  
+        
+    if all("hyperparathyroidism" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_hyperparathyroidism",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "hyperparathyroidism"},
+        ) 
+        
+    if all("early_monopause" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_early_monopause",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "early_monopause"},
+        ) 
+        
+    if all("lordosis_cyphosis" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_lordosis_cyphosis",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "lordosis_cyphosis"},
+        ) 
 
     if all("height" in mapping.values() for mapping in request.mappings):
         report.add_chart(
@@ -872,7 +1253,6 @@ async def create_report(request: ReportRequest):
         )
 
     metrics, charts, scores = report.generate()
-
     for dataset in report.datasets:
         key = dataset_key(dataset.name)
         sanitized = sanitize_metadata_for_duckdb(dataset.metadata)
