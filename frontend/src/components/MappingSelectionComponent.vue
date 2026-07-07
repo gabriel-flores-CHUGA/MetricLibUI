@@ -73,7 +73,7 @@ export default {
   data() {
     return {
       selectedUseCase: "ECG diagnosis",
-      useCases: ["ECG diagnosis", "Mammography","AMEDEEIA", "CHAOS"],
+      useCases: ["ECG diagnosis", "Mammography","Vertebra segmentation"],
       mapping: {},
       showOverlay: false,
       pendingField: null,
@@ -92,7 +92,7 @@ export default {
           ...common,
         ];
       }
-      if (this.selectedUseCase === "AMEDEEIA" | this.selectedUseCase === "CHAOS") {
+      if (this.selectedUseCase === "Vertebra segmentation") {
         return [
           "age", "sex", "path_segmentation_1", "path_segmentation_2", "manufacturer", "device", "site", "date_image","date_surgery", 
           "tobacco","alcohol","osteoporosis", "corticoids","diabetes","sedentary","physical_activity","early_menopause","hyperparathyroidism","lordosis_cyphosis",

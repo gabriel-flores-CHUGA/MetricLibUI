@@ -592,20 +592,13 @@ async def create_report(request: ReportRequest):
             
         if "path_segmentation_1" in request.mappings[i].values() and "path_segmentation_2" in request.mappings[i].values():
             dict_config = {}
-            if request.use_case == "AMEDEEIA":
-                dict_config = {'seg1_origin' : 'seg_CF_origin', 
-                'seg1_spacing':'seg_CF_spacing', 
-                'seg1_direction':'seg_CF_direction',
-                'seg2_origin' : 'seg_GK_origin', 
-                'seg2_spacing':'seg_GK_spacing', 
-                'seg2_direction':'seg_GK_direction'}
-            elif request.use_case == "CHAOS":
-                dict_config = {'seg1_origin' : 'seg_nnInteractive_origin', 
-               'seg1_spacing':'seg_nnInteractive_spacing', 
-               'seg1_direction':'seg_nnInteractive_direction',
-               'seg2_origin' : 'seg_TotalSegmentator_origin', 
-               'seg2_spacing':'seg_TotalSegmentator_spacing', 
-               'seg2_direction':'seg_TotalSegmentator_direction'}
+            if request.use_case == "Vertebra segmentation":
+                dict_config = {'seg1_origin' : 'seg1_origin', 
+                'seg1_spacing':'seg1_spacing', 
+                'seg1_direction':'seg1_direction',
+                'seg2_origin' : 'seg2_origin', 
+                'seg2_spacing':'seg2_spacing', 
+                'seg2_direction':'seg2_direction'}
             
             if dict_config != {}:
                 report.add_metric(
@@ -913,8 +906,9 @@ async def create_report(request: ReportRequest):
                     dataset_name=request.dataset_names[i],
                 )
                 
-            if request.use_case == "AMEDEEIA" or request.use_case == "CHAOS":
+            if request.use_case == "Vertebra segmentation":
                 # CT quality
+                dict_config = {'img_spacing':'img_spacing'}
                 
                 report.add_metric(
                     name=f"image_entropy",
@@ -932,29 +926,29 @@ async def create_report(request: ReportRequest):
                 
                 report.add_metric(
                     name=f"task_transfer_function50",
-                    metric_name="TaskTransferFunction50",
-                    metric_config=None,
+                    metric_name="ApproxTaskTransferFunction50",
+                    metric_config=dict_config,
                     dataset_name=request.dataset_names[i],
                 )
                 
                 report.add_metric(
                     name=f"task_transfer_function10",
-                    metric_name="TaskTransferFunction10",
-                    metric_config=None,
+                    metric_name="ApproxTaskTransferFunction10",
+                    metric_config=dict_config,
                     dataset_name=request.dataset_names[i],
                 )
                 
                 report.add_metric(
                     name=f"entropy_noise_power_spectrum",
-                    metric_name="Entropy_NoisePowerSpectrum3D",
-                    metric_config=None,
+                    metric_name="Entropy_NoisePowerSpectrum_avg3D",
+                    metric_config=dict_config,
                     dataset_name=request.dataset_names[i],
                 )
                 
                 report.add_metric(
                     name=f"total_power_noise_power_spectrum",
-                    metric_name="TotalPower_NoisePowerSpectrum3D",
-                    metric_config=None,
+                    metric_name="TotalPower_NoisePowerSpectrum_avg3D",
+                    metric_config=dict_config,
                     dataset_name=request.dataset_names[i],
                 )
                 
@@ -1036,7 +1030,7 @@ async def create_report(request: ReportRequest):
                 dataset_name=request.dataset_names[i],
             )
             
-        if request.use_case == "AMEDEEIA" or request.use_case == "CHAOS":
+        if request.use_case == "Vertebra segmentation":
         
             feature_columns = [
                 v
@@ -1081,12 +1075,12 @@ async def create_report(request: ReportRequest):
                 )
                 
     # DICE chart test
-    # if "path_segmentation_1" in request.mappings[i].values() and "path_segmentation_2" in request.mappings[i].values():
-    #     report.add_chart(
-    #         name="dice_coefficient",
-    #         chart_type="continuous_bar_chart",
-    #         chart_config={"field": "DICESimilarityCoefficient"},
-    #     )
+    if "path_segmentation_1" in request.mappings[i].values() and "path_segmentation_2" in request.mappings[i].values():
+        report.add_chart(
+            name="dice_coefficient",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "DICESimilarityCoefficient"},
+        )
 
     if all("weight" in mapping.values() for mapping in request.mappings):
         report.add_chart(
@@ -1252,7 +1246,7 @@ async def create_report(request: ReportRequest):
             chart_config={"feature_columns": feature_columns},
         )
 
-    metrics, charts, scores = report.generate()
+    metrics, charts, scores = report.generate()          
     for dataset in report.datasets:
         key = dataset_key(dataset.name)
         sanitized = sanitize_metadata_for_duckdb(dataset.metadata)

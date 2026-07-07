@@ -33,7 +33,6 @@ class DICEMean(CustomMetric, DICESimilarityCoefficient):
         DICESimilarityCoefficient.aggregate(datapoint, reference, metric_config)
 
     def compute(self, data, **kwargs):
-        print(data)
         return MetricResult(
             value=np.mean(data),
             cluster="Measurement Process",
@@ -50,7 +49,6 @@ class DICEMedian(CustomMetric, DICESimilarityCoefficient):
         DICESimilarityCoefficient.aggregate(datapoint, reference, metric_config)
 
     def compute(self, data, **kwargs):
-        print(data)
         return MetricResult(
             value=np.median(data),
             cluster="Measurement Process",
@@ -67,7 +65,6 @@ class IntersectionOverUnionMean(CustomMetric, IntersectionOverUnion):
         IntersectionOverUnion.aggregate(datapoint, reference, metric_config)
 
     def compute(self, data, **kwargs):
-        print(data)
         return MetricResult(
             value=np.mean(data),
             cluster="Measurement Process",
@@ -84,7 +81,6 @@ class IntersectionOverUnionMedian(CustomMetric, IntersectionOverUnion):
         IntersectionOverUnion.aggregate(datapoint, reference, metric_config)
 
     def compute(self, data, **kwargs):
-        print(data)
         return MetricResult(
             value=np.median(data),
             cluster="Measurement Process",
@@ -101,7 +97,6 @@ class HausdorffDistanceMean(CustomMetric, HausdorffDistance):
         HausdorffDistance.aggregate(datapoint, reference, metric_config)
 
     def compute(self, data, **kwargs):
-        print(data)
         return MetricResult(
             value=np.mean(data),
             cluster="Measurement Process",
@@ -118,7 +113,6 @@ class HausdorffDistanceMedian(CustomMetric, HausdorffDistance):
         HausdorffDistance.aggregate(datapoint, reference, metric_config)
 
     def compute(self, data, **kwargs):
-        print(data)
         return MetricResult(
             value=np.median(data),
             cluster="Measurement Process",
@@ -135,7 +129,6 @@ class HausdorffDistance95Mean(CustomMetric, HausdorffDistance95):
         HausdorffDistance95.aggregate(datapoint, reference, metric_config)
 
     def compute(self, data, **kwargs):
-        print(data)
         return MetricResult(
             value=np.mean(data),
             cluster="Measurement Process",
@@ -152,7 +145,6 @@ class HausdorffDistance95Median(CustomMetric, HausdorffDistance95):
         HausdorffDistance95.aggregate(datapoint, reference, metric_config)
 
     def compute(self, data, **kwargs):
-        print(data)
         return MetricResult(
             value=np.median(data),
             cluster="Measurement Process",
