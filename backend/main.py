@@ -163,28 +163,30 @@ class CsvDataset(Dataset):
         
         if ".nii.gz" in img_path:
         
-            # Test if NIFTI file
+            # check if NIFTI file
             img = sitk.ReadImage(img_path)
             img_np = sitk.GetArrayFromImage(img).astype(np.float32)
             x = torch.from_numpy(img_np)
             
             # paths segmentations 
-            
-            model_input_col = list(self.mapping.keys())[
-                list(self.mapping.values()).index("path_segmentation_1")
-            ]
-            seg1_path = row.get(model_input_col)
-            seg1_path = os.path.join(DATA_DIR, seg1_path)
-            
-            model_input_col = list(self.mapping.keys())[
-                list(self.mapping.values()).index("path_segmentation_2")
-            ]
-            seg2_path = row.get(model_input_col)
-            seg2_path = os.path.join(DATA_DIR, seg2_path)
-            seg1 = sitk.GetArrayFromImage(sitk.ReadImage(seg1_path))
-            seg2 = sitk.GetArrayFromImage(sitk.ReadImage(seg2_path))
-            
-            y = torch.tensor([seg1, seg2])
+            l_segmentation_path = []
+            for value, key in self.mapping.items():
+                if key == "path_segmentation":
+                        field = row.get(value)
+                        l_segmentation_path.append(field)
+
+            if len(l_segmentation_path) == 2:
+                seg1_path = l_segmentation_path[0]
+                seg1_path = os.path.join(DATA_DIR, seg1_path)
+                
+                seg2_path = l_segmentation_path[1]
+                seg2_path = os.path.join(DATA_DIR, seg2_path)
+                seg1 = sitk.GetArrayFromImage(sitk.ReadImage(seg1_path))
+                seg2 = sitk.GetArrayFromImage(sitk.ReadImage(seg2_path))
+                
+                y = torch.tensor([seg1, seg2])
+            else:
+                y = torch.tensor([0, 0])
             
         else:
             try:
@@ -590,9 +592,10 @@ async def create_report(request: ReportRequest):
                 dataset_name=request.dataset_names[i],
             )
             
-        if "path_segmentation_1" in request.mappings[i].values() and "path_segmentation_2" in request.mappings[i].values():
+        if "path_segmentation" in request.mappings[i].values():
             dict_config = {}
             if request.use_case == "Vertebra segmentation":
+                # columns names from csv file
                 dict_config = {'seg1_origin' : 'seg1_origin', 
                 'seg1_spacing':'seg1_spacing', 
                 'seg1_direction':'seg1_direction',
@@ -600,6 +603,7 @@ async def create_report(request: ReportRequest):
                 'seg2_spacing':'seg2_spacing', 
                 'seg2_direction':'seg2_direction'}
             
+            # TEST with DICE
             if dict_config != {}:
                 report.add_metric(
                     name=f"dice_coefficient",
@@ -1074,12 +1078,30 @@ async def create_report(request: ReportRequest):
                     dataset_name=request.dataset_names[i],
                 )
                 
-    # DICE chart test
-    if "path_segmentation_1" in request.mappings[i].values() and "path_segmentation_2" in request.mappings[i].values():
+    # DICE chart TEST
+    if "path_segmentation" in request.mappings[i].values():
         report.add_chart(
             name="dice_coefficient",
             chart_type="continuous_bar_chart",
-            chart_config={"field": "DICESimilarityCoefficient"},
+            chart_config={"field": "dice_coefficient", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="intersection_over_union",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "intersection_over_union", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="hausdorff_distance",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "hausdorff_distance", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="hausdorff_distance95",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "hausdorff_distance95", "n_buckets":10},
         )
 
     if all("weight" in mapping.values() for mapping in request.mappings):
