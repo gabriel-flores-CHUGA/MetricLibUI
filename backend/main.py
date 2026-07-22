@@ -29,7 +29,7 @@ from metriclib.data import Dataset
 from metriclib.report import Report
 from metriclib.metric import TabularMetric, StreamMetric
 
-from custom_metrics import CustomMetric
+from custom_metrics import CustomMetric, CustomChart
 
 app = FastAPI()
 
@@ -758,9 +758,9 @@ async def create_report(request: ReportRequest):
         for i in range(len(request.mappings))
     ):
         report.add_chart(
-            name="sample_entropy",
+            name="signal_precision",
             chart_type="continuous_bar_chart",
-            chart_config={"field": "sample_entropy", "n_buckets": 10},
+            chart_config={"field": "signal_precision", "n_buckets": 10},
         )
 
     if all("site" in mapping.values() for mapping in request.mappings):
@@ -815,6 +815,19 @@ async def create_report(request: ReportRequest):
         )
 
     metrics, charts, scores = report.generate()
+
+    for dataset in report.datasets:
+        dataset_metadata = dataset.get_metadata()
+        for chart_cls in CustomChart.registry.values():
+            chart_instance = chart_cls()
+            charts.append(
+                {
+                    "name": getattr(chart_instance, "dimension", chart_cls.__name__),
+                    "type": "custom",
+                    "figure": chart_instance.render(dataset_metadata),
+                    "config": {},
+                }
+            )
 
     for dataset in report.datasets:
         key = dataset_key(dataset.name)
