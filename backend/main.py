@@ -1078,7 +1078,6 @@ async def create_report(request: ReportRequest):
                     dataset_name=request.dataset_names[i],
                 )
                 
-    # DICE chart TEST
     if "path_segmentation" in request.mappings[i].values():
         report.add_chart(
             name="dice_coefficient",
@@ -1103,6 +1102,46 @@ async def create_report(request: ReportRequest):
             chart_type="continuous_bar_chart",
             chart_config={"field": "hausdorff_distance95", "n_buckets":10},
         )
+        
+    # TODO
+    if request.use_case == "Vertebra segmentation":
+        
+        report.add_chart(
+            name="image_entropy",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "image_entropy", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="mean_gradient_magnitude_scale",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "mean_gradient_magnitude_scale", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="task_transfer_function50",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "task_transfer_function50", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="task_transfer_function10",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "task_transfer_function10", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="entropy_noise_power_spectrum",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "entropy_noise_power_spectrum", "n_buckets":10},
+        )
+
+        report.add_chart(
+            name="total_power_noise_power_spectrum",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "total_power_noise_power_spectrum", "n_buckets":10},
+        )
+    
 
     if all("weight" in mapping.values() for mapping in request.mappings):
         report.add_chart(
