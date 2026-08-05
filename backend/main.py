@@ -772,7 +772,6 @@ async def create_report(request: ReportRequest):
             )
             
 
-
             report.add_metric(
                 name=f"variety_age",
                 metric_name="Range",
@@ -782,12 +781,12 @@ async def create_report(request: ReportRequest):
                 dataset_name=request.dataset_names[i],
             )
 
-        if "early_monopause" in request.mappings[i].values():
+        if "early_menopause" in request.mappings[i].values():
             report.add_metric(
-                name=f"variety_early_monopause",
+                name=f"variety_early_menopause",
                 metric_name="IQR",
                 metric_config={
-                    "column": "early_monopause",
+                    "column": "early_menopause",
                 },
                 dataset_name=request.dataset_names[i],
             )
@@ -1252,11 +1251,11 @@ async def create_report(request: ReportRequest):
             chart_config={"field": "hyperparathyroidism"},
         ) 
         
-    if all("early_monopause" in mapping.values() for mapping in request.mappings):
+    if all("early_menopause" in mapping.values() for mapping in request.mappings):
         report.add_chart(
-            name="variety_early_monopause",
+            name="variety_early_menopause",
             chart_type="categorical_bar_chart",
-            chart_config={"field": "early_monopause"},
+            chart_config={"field": "early_menopause"},
         ) 
         
     if all("lordosis_cyphosis" in mapping.values() for mapping in request.mappings):
