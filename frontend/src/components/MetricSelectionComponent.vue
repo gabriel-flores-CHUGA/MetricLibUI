@@ -96,6 +96,8 @@ export default {
           "human induced error",
           "completeness",
           "source credibility",
+          "segmentation",
+          "CT quality"
         ],
         Timeliness: ["timeliness"],
         Representativeness: [
@@ -132,6 +134,8 @@ export default {
             traceability: [],
             "data poisoning": [],
           },
+          "segmentation": ["dice_coefficient","intersection_over_union","hausdorff_distance","hausdorff_distance95"],
+          "CT quality": ["image_entropy","mean_gradient_magnitude_scale","task_transfer_function50","task_transfer_function10","total_power_noise_power_spectrum", "entropy_noise_power_spectrum"],
         },
         Timeliness: {
           timeliness: {
@@ -146,10 +150,27 @@ export default {
               "variety_sex",
               "variety_height",
               "variety_weight",
+              "variety_breast_density",
+              "variety_implants_present",
+              "variety_breast_side",
+              "variety_breast_thickness",
+              "variety_tobacco",
+              "variety_alcohol",
+              "variety_corticoids",
+              "variety_sedentary",
+              "variety_physical_activity",
+              "variety_diabetes",
+              "variety_osteoporosis",
+              "variety_hyperparathyroidism",
+              "variety_early_monopause",
+              "variety_lordosis_cyphosis"
             ],
             "variety in data sources": [
               "variety_device",
               "variety_site",
+              "variety_view_position",
+              "variety_compression_force",
+              "variety_machine_model",
             ],
           },
           "depth of data": {
@@ -184,9 +205,22 @@ export default {
         },
       },
       additionalMerged: false,
+      metricGroups: {},
     };
   },
   computed: {
+    reportMetricNames() {
+      const names = new Set();
+      const metrics = this.report?.metrics;
+      if (metrics) {
+        const list = metrics.value ?? metrics;
+        if (Array.isArray(list)) list.forEach(e => e?.name && names.add(e.name));
+      }
+      if (Array.isArray(this.report?.charts)) {
+        this.report.charts.forEach(e => e?.name && names.add(e.name));
+      }
+      return names;
+    },
     rawSubData() {
       const topLevel = this.metricsData[this.activeTopTab];
       return topLevel?.[this.activeSubTab];
@@ -202,9 +236,16 @@ export default {
       return [];
     },
     columns() {
-      if (this.isDirectList) return [this.rawSubData];
+      const filterByReport = (items) => {
+        if (!this.report || this.reportMetricNames.size === 0) return items;
+        return items.filter(item => {
+          const names = this.metricGroups[item] ?? [item];
+          return names.some(n => this.reportMetricNames.has(n));
+        });
+      };
+      if (this.isDirectList) return [filterByReport(this.rawSubData)];
       if (typeof this.rawSubData === "object" && this.rawSubData !== null) {
-        return Object.values(this.rawSubData);
+        return Object.values(this.rawSubData).map(filterByReport);
       }
       return [];
     },
@@ -263,8 +304,9 @@ export default {
           this.additionalMerged = true;
         }
       
+        const itemNames = this.metricGroups[item] ?? [item];
         const metric_values = (metrics.value ?? metrics).filter(
-          entry => entry?.name === item
+          entry => itemNames.includes(entry?.name)
         );
       
         const allDescriptions = new Set();
@@ -329,7 +371,7 @@ export default {
         ` : '';
 
         const figures = this.report.charts.filter(
-          entry => entry?.name === item
+          entry => itemNames.includes(entry?.name)
         );
 
         if (Array.isArray(figures) && figures.length > 0) {

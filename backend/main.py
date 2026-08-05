@@ -8,6 +8,7 @@ from typing import List, Optional
 
 import matplotlib
 import torch
+import SimpleITK as sitk
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -62,9 +63,9 @@ def dataset_key(name: str) -> str:
 def load_table_with_fallback(primary_table: str, fallback_table: str) -> pd.DataFrame:
     """Load primary DuckDB table, fallback to alternate table if missing."""
     try:
-        return con.execute(f"SELECT * FROM {primary_table}").df()
+        return con.execute(f'SELECT * FROM "{primary_table}"').df()
     except duckdb.Error:
-        return con.execute(f"SELECT * FROM {fallback_table}").df()
+        return con.execute(f'SELECT * FROM "{fallback_table}"').df()
 
 
 def sanitize_metadata_for_duckdb(df: pd.DataFrame) -> pd.DataFrame:
@@ -116,7 +117,10 @@ class CsvDataset(Dataset):
                 for label in labels
             ]
         super().__init__(name, metadata_df_processed, labels)
+        # add "idx" column to apply specific metrics
+        df["idx"] = labels
         self.df = df
+        mapping["idx"] = "idx"
         self.mapping = mapping
 
     def __len__(self):
@@ -126,13 +130,16 @@ class CsvDataset(Dataset):
         row = self.df.iloc[idx].to_dict()
 
         result = {}
-        label_keys = [k for k, v in self.mapping.items() if v == "label"]
-        labels = torch.tensor(
-            pd.to_numeric(
-                pd.Series([row.get(k) for k in label_keys]), errors="coerce"
-            ).to_numpy(dtype=np.float32),
-            dtype=torch.float32,
-        )
+        if self.labels is not None:
+            labels = self.labels[idx]
+        else:
+            label_keys = [k for k, v in self.mapping.items() if v == "label"]
+            labels = torch.tensor(
+                pd.to_numeric(
+                    pd.Series([row.get(k) for k in label_keys]), errors="coerce"
+                ).to_numpy(dtype=np.float32),
+                dtype=torch.float32,
+            )
         for value, key in self.mapping.items():
             if key == "other" or key == "label":
                 field = row.get(value)
@@ -143,33 +150,72 @@ class CsvDataset(Dataset):
 
         if "model_input" not in self.mapping.values():
             return None, labels, result
+        
+        
+        ### load nii.gz images
+        
+        # Get path file
+        model_input_col = list(self.mapping.keys())[
+            list(self.mapping.values()).index("model_input")
+        ]
+        img_path = row.get(model_input_col)
+        img_path = os.path.join(DATA_DIR, img_path)
+        
+        if re.search(r"\.nii\.gz$", img_path):
+        
+            # check if NIFTI file
+            img = sitk.ReadImage(img_path)
+            img_np = sitk.GetArrayFromImage(img).astype(np.float32)
+            x = torch.from_numpy(img_np)
+            
+            # paths segmentations 
+            l_segmentation_path = []
+            for value, key in self.mapping.items():
+                if key == "path_segmentation":
+                        field = row.get(value)
+                        l_segmentation_path.append(field)
 
-        try:
-            x = wfdb.rdsamp(
-                os.path.join(
-                    DATA_DIR,
-                    row[
-                        list(self.mapping.keys())[
-                            list(self.mapping.values()).index("model_input")
-                        ]
-                    ],
-                )
-            )[0].T
-        except Exception as e:
-            model_input_col = list(self.mapping.keys())[
-                list(self.mapping.values()).index("model_input")
-            ]
-            img_path = row.get(model_input_col)
-            img_path = os.path.join(DATA_DIR, img_path)
-            img = mpimg.imread(img_path)
-            if img.ndim == 2:
-                img = img[:, :, None]
-            img_chw = np.transpose(img, (2, 0, 1)).astype(np.float32)
-            x = torch.from_numpy(img_chw)
+            if len(l_segmentation_path) == 2:
+                seg1_path = l_segmentation_path[0]
+                seg1_path = os.path.join(DATA_DIR, seg1_path)
+                
+                seg2_path = l_segmentation_path[1]
+                seg2_path = os.path.join(DATA_DIR, seg2_path)
+                seg1 = sitk.GetArrayFromImage(sitk.ReadImage(seg1_path))
+                seg2 = sitk.GetArrayFromImage(sitk.ReadImage(seg2_path))
+                seg1 = seg1.astype(np.int16)
+                seg2 = seg2.astype(np.int16)
+                
+                y = torch.tensor([seg1, seg2])
+            else:
+                y = torch.tensor([0, 0])
+            
+        else:
+            try:
+                x = wfdb.rdsamp(
+                    os.path.join(
+                        DATA_DIR,
+                        row[
+                            list(self.mapping.keys())[
+                                list(self.mapping.values()).index("model_input")
+                            ]
+                        ],
+                    )
+                )[0].T
+            except Exception as e:
+                model_input_col = list(self.mapping.keys())[
+                    list(self.mapping.values()).index("model_input")
+                ]
+                img_path = os.path.join(DATA_DIR, img_path)
+                img = mpimg.imread(img_path)
+                if img.ndim == 2:
+                    img = img[:, :, None]
+                img_chw = np.transpose(img, (2, 0, 1)).astype(np.float32)
+                x = torch.from_numpy(img_chw)
 
         return (
             x,
-            labels,
+            y,
             result,
         )
 
@@ -262,8 +308,12 @@ async def create_dataset(request: DatasetRequest):
 
     con.register(request.name, df)
 
-    dataset = CsvDataset(name=request.name, df=df, mapping=request.mapping)
-    metadata_df = sanitize_metadata_for_duckdb(dataset.get_metadata())
+    meta_parts = {
+        (src if role in ("other", "label") else role): df[src]
+        for src, role in request.mapping.items()
+        if src in df.columns
+    }
+    metadata_df = sanitize_metadata_for_duckdb(pd.DataFrame(meta_parts, index=df.index))
 
     con.register(
         f"{request.name}_mapping",
@@ -279,6 +329,11 @@ async def create_dataset(request: DatasetRequest):
         if label_columns
         else pd.DataFrame({"_label": [None] * len(df)})
     )
+    if len(label_columns) == 1:
+        col = label_columns[0]
+        if not pd.api.types.is_numeric_dtype(labels_df[col]):
+            codes, _ = pd.factorize(labels_df[col])
+            labels_df[col] = codes
     con.register(f"{request.name}_labels", labels_df)
     con.register(f"{request.name}_labels_base", labels_df)
     numeric_cols = metadata_df.select_dtypes(include=[np.number]).columns
@@ -301,10 +356,10 @@ async def get_dataset(name: str, query: str, mapping: str):
     query_str = process_query(query)
 
     metadata_df_processed = con.execute(
-        f"SELECT * FROM {key}_metadata_processed_base"
+        f'SELECT * FROM "{key}_metadata_processed_base"'
     ).df()
 
-    labels_df = con.execute(f"SELECT * FROM {key}_labels_base").df()
+    labels_df = con.execute(f'SELECT * FROM "{key}_labels_base"').df()
 
     if query_str.strip() and query_str != "":
         metadata_df_processed = metadata_df_processed[
@@ -317,7 +372,7 @@ async def get_dataset(name: str, query: str, mapping: str):
     con.register(f"{key}_metadata_processed", metadata_df_processed)
     con.register(f"{key}_labels", labels_df)
 
-    mapping_df = con.execute(f"SELECT * FROM {key}_mapping").df()
+    mapping_df = con.execute(f'SELECT * FROM "{key}_mapping"').df()
 
     metadata_df_processed.insert(0, "idx", metadata_df_processed.index)
 
@@ -345,9 +400,10 @@ async def get_dataset(name: str, query: str, mapping: str):
 def process_query(query):
     query_str = query.replace(" AND ", " & ").replace(" OR ", " | ")
     query_str = query_str.replace("[", "").replace("]", "").replace("\xa0", " ")
+    query_str = re.sub(r"`([^`]+)`\s*==\s*null", r"`\1` != `\1`", query_str)
+    query_str = re.sub(r"`([^`]+)`\s*!=\s*null", r"`\1` == `\1`", query_str)
     query_str = re.sub(r"(\w+)\s*==\s*null", r"\1 != \1", query_str)
     query_str = re.sub(r"(\w+)\s*!=\s*null", r"\1 == \1", query_str)
-
     return query_str
 
 
@@ -447,15 +503,19 @@ async def create_report(request: ReportRequest):
     for i, name in enumerate(request.dataset_names):
         key = dataset_key(name)
         n_label_targets = sum(1 for v in request.mappings[i].values() if v == "label")
-        metadata_df = con.execute(f"SELECT * FROM {key}").df()
-        labels_df = con.execute(f"SELECT * FROM {key}_labels_base").df()
+        metadata_df = con.execute(f'SELECT * FROM "{key}"').df()
+        labels_df = con.execute(f'SELECT * FROM "{key}_labels_base"').df()
+        processed_metadata_df = con.execute(
+            f'SELECT * FROM "{key}_metadata_processed_base"'
+        ).df()
         print(f"Loaded dataset {name} with {len(metadata_df)} rows.")
         if request.queries and i < len(request.queries):
             query_str = process_query(request.queries[i])
             if query_str.strip() and query_str != "":
-                metadata_df = metadata_df[metadata_df.eval(query_str)]
-                common_idx = metadata_df.index.intersection(labels_df.index)
+                processed_metadata_df = processed_metadata_df[processed_metadata_df.eval(query_str)]
+                common_idx = processed_metadata_df.index.intersection(labels_df.index).intersection(metadata_df.index)
                 metadata_df = metadata_df.loc[common_idx]
+                processed_metadata_df = processed_metadata_df.loc[common_idx]
                 labels_df = labels_df.loc[common_idx]
 
         if labels_df.empty:
@@ -497,9 +557,6 @@ async def create_report(request: ReportRequest):
                 for value in labels_df.iloc[:, 0].tolist()
             ]
 
-        processed_metadata_df = con.execute(
-            f"SELECT * FROM {key}_metadata_processed"
-        ).df()
         datasets.append(
             CsvDataset(
                 df=metadata_df,
@@ -524,7 +581,7 @@ async def create_report(request: ReportRequest):
             else:
                 report.add_metric(
                     name=f"class_balance",
-                    metric_name="MultiLabelGeneralizedImbalanceRatio",
+                    metric_name="MultiClassGeneralizedImbalanceRatio",
                     metric_config={"column": "labels"},
                     dataset_name=request.dataset_names[i],
                 )
@@ -536,16 +593,184 @@ async def create_report(request: ReportRequest):
                 metric_config={"column": "sex", "q": 2, "types": [0, 1]},
                 dataset_name=request.dataset_names[i],
             )
-
-        if "age" in request.mappings[i].values():
+            
+        if "path_segmentation" in request.mappings[i].values():
+            dict_config = {}
+            if request.use_case == "Vertebra segmentation":
+                # columns names from csv file
+                dict_config = {'seg1_origin' : 'seg1_origin', 
+                'seg1_spacing':'seg1_spacing', 
+                'seg1_direction':'seg1_direction',
+                'seg2_origin' : 'seg2_origin', 
+                'seg2_spacing':'seg2_spacing', 
+                'seg2_direction':'seg2_direction'}
+            
+            # TEST with DICE
+            if dict_config != {}:
+                report.add_metric(
+                    name=f"dice_coefficient",
+                    metric_name="DICESimilarityCoefficient",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"intersection_over_union",
+                    metric_name="IntersectionOverUnion",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance",
+                    metric_name="HausdorffDistance",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance95",
+                    metric_name="HausdorffDistance95",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"dice_coefficient",
+                    metric_name="DICEMean",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"dice_coefficient",
+                    metric_name="DICEMedian",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"intersection_over_union",
+                    metric_name="IntersectionOverUnionMean",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"intersection_over_union",
+                    metric_name="IntersectionOverUnionMedian",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance",
+                    metric_name="HausdorffDistanceMean",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance",
+                    metric_name="HausdorffDistanceMedian",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance95",
+                    metric_name="HausdorffDistance95Mean",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"hausdorff_distance95",
+                    metric_name="HausdorffDistance95Median",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+            
+        if "tobacco" in request.mappings[i].values():
             report.add_metric(
-                name=f"variety_age",
+                name=f"variety_tobacco",
                 metric_name="IQR",
                 metric_config={
-                    "column": "age",
+                    "column": "tobacco",
                 },
                 dataset_name=request.dataset_names[i],
             )
+            
+        if "alcohol" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_alcohol",
+                metric_name="IQR",
+                metric_config={
+                    "column": "alcohol",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+                     
+        if "corticoids" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_corticoids",
+                metric_name="IQR",
+                metric_config={
+                    "column": "corticoids",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "sedentary" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_sedentary",
+                metric_name="IQR",
+                metric_config={
+                    "column": "sedentary",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "physical_activity" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_physical_activity",
+                metric_name="IQR",
+                metric_config={
+                    "column": "physical_activity",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "diabetes" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_diabetes",
+                metric_name="IQR",
+                metric_config={
+                    "column": "diabetes",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "osteoporosis" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_osteoporosis",
+                metric_name="IQR",
+                metric_config={
+                    "column": "osteoporosis",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "hyperparathyroidism" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_hyperparathyroidism",
+                metric_name="IQR",
+                metric_config={
+                    "column": "hyperparathyroidism",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
 
             report.add_metric(
                 name=f"variety_age",
@@ -556,6 +781,27 @@ async def create_report(request: ReportRequest):
                 dataset_name=request.dataset_names[i],
             )
 
+        if "early_menopause" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_early_menopause",
+                metric_name="IQR",
+                metric_config={
+                    "column": "early_menopause",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        if "lordosis_cyphosis" in request.mappings[i].values():
+            report.add_metric(
+                name=f"variety_lordosis_cyphosis",
+                metric_name="IQR",
+                metric_config={
+                    "column": "lordosis_cyphosis",
+                },
+                dataset_name=request.dataset_names[i],
+            )
+            
+        
         if "height" in request.mappings[i].values():
             report.add_metric(
                 name=f"variety_height",
@@ -662,6 +908,54 @@ async def create_report(request: ReportRequest):
                     metric_config={},
                     dataset_name=request.dataset_names[i],
                 )
+                
+            if request.use_case == "Vertebra segmentation":
+                # CT quality
+                dict_config = {'img_spacing':'img_spacing'}
+                
+                report.add_metric(
+                    name=f"image_entropy",
+                    metric_name="ImageEntropy3D",
+                    metric_config=None,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"mean_gradient_magnitude_scale",
+                    metric_name="MeanGradientMagnitudeScale",
+                    metric_config=None,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"task_transfer_function50",
+                    metric_name="ApproxTaskTransferFunction50",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"task_transfer_function10",
+                    metric_name="ApproxTaskTransferFunction10",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"entropy_noise_power_spectrum",
+                    metric_name="Entropy_NoisePowerSpectrum_avg3D",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                report.add_metric(
+                    name=f"total_power_noise_power_spectrum",
+                    metric_name="TotalPower_NoisePowerSpectrum_avg3D",
+                    metric_config=dict_config,
+                    dataset_name=request.dataset_names[i],
+                )
+                
+                
 
         if "created_at" in request.mappings[i].values():
             report.add_metric(
@@ -693,10 +987,42 @@ async def create_report(request: ReportRequest):
                 dataset_name=request.dataset_names[i],
             )
 
+        for mamm_cont in ["breast_thickness", "compression_force"]:
+            if mamm_cont in request.mappings[i].values():
+                report.add_metric(
+                    name=f"variety_{mamm_cont}",
+                    metric_name="IQR",
+                    metric_config={"column": mamm_cont},
+                    dataset_name=request.dataset_names[i],
+                )
+
+        mamm_cat_name_overrides = {"detector_type": "device"}
+        for mamm_cat in [
+            "breast_side", "view_position", "breast_density",
+            "implants_present", "detector_type", "machine_model",
+        ]:
+            if mamm_cat in request.mappings[i].values():
+                src_col = [k for k, v in request.mappings[i].items() if v == mamm_cat][0]
+                metric_name = mamm_cat_name_overrides.get(mamm_cat, mamm_cat)
+                report.add_metric(
+                    name=f"variety_{metric_name}",
+                    metric_name="HillNumbers",
+                    metric_config={
+                        "column": mamm_cat,
+                        "q": 2,
+                        "types": datasets[i].df[src_col].unique().tolist(),
+                    },
+                    dataset_name=request.dataset_names[i],
+                )
+
         feature_columns = [
             v
             for k, v in request.mappings[i].items()
-            if v in ["sex", "device", "site", "ethnicity", "nurse"]
+            if v in [
+                "sex", "device", "site", "ethnicity", "nurse",
+                "breast_side", "view_position", "breast_density",
+                "implants_present", "detector_type", "machine_model", "manufacturer",
+            ]
         ]
 
         if len(feature_columns) > 0 and "label" in request.mappings[i].values():
@@ -706,6 +1032,25 @@ async def create_report(request: ReportRequest):
                 metric_config={"feature_columns": feature_columns},
                 dataset_name=request.dataset_names[i],
             )
+            
+        if request.use_case == "Vertebra segmentation":
+        
+            feature_columns = [
+                v
+                for k, v in request.mappings[i].items()
+                if v in [
+                    "age", "tobacco", "alcohol", "corticoids", "sedentary", "physical_activity","diabetes","osteoporosis",
+                    "hyperparathyroidism", "early_menopause", "lordosis_cyphosis",
+                ]
+            ]
+
+            if len(feature_columns) > 0 and "label" in request.mappings[i].values():
+                report.add_metric(
+                    name="correlations",
+                    metric_name="PearsonCorrelation",
+                    metric_config={"feature_columns": feature_columns},
+                    dataset_name=request.dataset_names[i],
+                )
 
         report.add_metric(
             name="metadata_completeness",
@@ -731,6 +1076,71 @@ async def create_report(request: ReportRequest):
                     metric_config={},
                     dataset_name=request.dataset_names[i],
                 )
+                
+    if "path_segmentation" in request.mappings[i].values():
+        report.add_chart(
+            name="dice_coefficient",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "dice_coefficient", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="intersection_over_union",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "intersection_over_union", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="hausdorff_distance",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "hausdorff_distance", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="hausdorff_distance95",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "hausdorff_distance95", "n_buckets":10},
+        )
+        
+    # TODO
+    if request.use_case == "Vertebra segmentation":
+        
+        report.add_chart(
+            name="image_entropy",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "image_entropy", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="mean_gradient_magnitude_scale",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "mean_gradient_magnitude_scale", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="task_transfer_function50",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "task_transfer_function50", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="task_transfer_function10",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "task_transfer_function10", "n_buckets":10},
+        )
+        
+        report.add_chart(
+            name="entropy_noise_power_spectrum",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "entropy_noise_power_spectrum", "n_buckets":10},
+        )
+
+        report.add_chart(
+            name="total_power_noise_power_spectrum",
+            chart_type="continuous_bar_chart",
+            chart_config={"field": "total_power_noise_power_spectrum", "n_buckets":10},
+        )
+    
 
     if all("weight" in mapping.values() for mapping in request.mappings):
         report.add_chart(
@@ -783,6 +1193,77 @@ async def create_report(request: ReportRequest):
             chart_type="continuous_bar_chart",
             chart_config={"field": "age"},
         )
+        
+    if all("tobacco" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_tobacco",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "tobacco"},
+        )
+        
+    if all("alcohol" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_alcohol",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "alcohol"},
+        )
+        
+    if all("corticoids" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_corticoids",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "corticoids"},
+        )    
+        
+        
+    if all("sedentary" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_sedentary",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "sedentary"},
+        )  
+        
+    if all("physical_activity" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_physical_activity",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "physical_activity"},
+        )  
+        
+    if all("diabetes" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_diabetes",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "diabetes"},
+        )
+        
+    if all("osteoporosis" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_osteoporosis",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "osteoporosis"},
+        )  
+        
+    if all("hyperparathyroidism" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_hyperparathyroidism",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "hyperparathyroidism"},
+        ) 
+        
+    if all("early_menopause" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_early_menopause",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "early_menopause"},
+        ) 
+        
+    if all("lordosis_cyphosis" in mapping.values() for mapping in request.mappings):
+        report.add_chart(
+            name="variety_lordosis_cyphosis",
+            chart_type="categorical_bar_chart",
+            chart_config={"field": "lordosis_cyphosis"},
+        ) 
 
     if all("height" in mapping.values() for mapping in request.mappings):
         report.add_chart(
@@ -797,6 +1278,27 @@ async def create_report(request: ReportRequest):
             chart_type="categorical_bar_chart",
             chart_config={"field": "created_at"},
         )
+
+    mamm_cat_name_overrides = {"detector_type": "device"}
+    for mamm_cat in [
+        "breast_side", "view_position", "breast_density",
+        "implants_present", "detector_type", "machine_model",
+    ]:
+        if all(mamm_cat in m.values() for m in request.mappings):
+            chart_name = mamm_cat_name_overrides.get(mamm_cat, mamm_cat)
+            report.add_chart(
+                name=f"variety_{chart_name}",
+                chart_type="categorical_bar_chart",
+                chart_config={"field": mamm_cat},
+            )
+
+    for mamm_cont in ["breast_thickness", "compression_force"]:
+        if all(mamm_cont in m.values() for m in request.mappings):
+            report.add_chart(
+                name=f"variety_{mamm_cont}",
+                chart_type="continuous_bar_chart",
+                chart_config={"field": mamm_cont},
+            )
 
     if all("label" in mapping.values() for mapping in request.mappings):
         report.add_chart(
@@ -814,8 +1316,7 @@ async def create_report(request: ReportRequest):
             chart_config={"feature_columns": feature_columns},
         )
 
-    metrics, charts, scores = report.generate()
-
+    metrics, charts, scores = report.generate()          
     for dataset in report.datasets:
         dataset_metadata = dataset.get_metadata()
         for chart_cls in CustomChart.registry.values():
@@ -833,7 +1334,7 @@ async def create_report(request: ReportRequest):
         key = dataset_key(dataset.name)
         sanitized = sanitize_metadata_for_duckdb(dataset.metadata)
         con.register(f"{key}_metadata_processed", sanitized)
-        base_df = con.execute(f"SELECT * FROM {key}_metadata_processed_base").df()
+        base_df = con.execute(f'SELECT * FROM "{key}_metadata_processed_base"').df()
         new_cols = [c for c in sanitized.columns if c not in base_df.columns]
         if new_cols:
             for col in new_cols:
@@ -867,11 +1368,8 @@ async def get_scores(index):
 @app.get("/api/image")
 def get_image(index: str, name: str, mapping: str, use_case: str = None):
     metadata_df = metadata_df = con.execute(
-        f"SELECT * FROM {name.replace('.csv', '')}"
+        f'SELECT * FROM "{name.replace(".csv", "")}"'
     ).df()
-
-    if use_case != "ECG diagnosis":
-        raise ValueError("Unsupported use case for image retrieval")
 
     mapping = json.loads(mapping)
     model_input_col = list(mapping.keys())[list(mapping.values()).index("model_input")]
@@ -882,19 +1380,22 @@ def get_image(index: str, name: str, mapping: str, use_case: str = None):
             status_code=404, content={"error": f"File {name}.csv not found."}
         )
 
-    x = wfdb.rdsamp(
-        os.path.join(DATA_DIR, metadata_df[model_input_col].iloc[int(index)])
-    )[0].T
-
-    ecg_plot.plot_12(x, sample_rate=x.shape[1] / 10)
-
-    fig = plt.gcf()
-
-    # Render to PNG in memory
+    record_path = os.path.join(DATA_DIR, metadata_df[model_input_col].iloc[int(index)])
     buf = io.BytesIO()
-    FigureCanvas(fig).print_png(buf)
-    plt.close(fig)
+
+    try:
+        x = wfdb.rdsamp(record_path)[0].T
+        ecg_plot.plot_12(x, sample_rate=x.shape[1] / 10)
+        fig = plt.gcf()
+        FigureCanvas(fig).print_png(buf)
+        plt.close(fig)
+    except Exception:
+        img = mpimg.imread(record_path)
+        fig, ax = plt.subplots()
+        ax.imshow(img, cmap="gray" if img.ndim == 2 else None)
+        ax.axis("off")
+        FigureCanvas(fig).print_png(buf)
+        plt.close(fig)
 
     img_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
     return {"image_base64": img_base64}
