@@ -161,7 +161,7 @@ class CsvDataset(Dataset):
         img_path = row.get(model_input_col)
         img_path = os.path.join(DATA_DIR, img_path)
         
-        if ".nii.gz" in img_path:
+        if re.search(r"\.nii\.gz$", img_path):
         
             # check if NIFTI file
             img = sitk.ReadImage(img_path)
@@ -183,6 +183,8 @@ class CsvDataset(Dataset):
                 seg2_path = os.path.join(DATA_DIR, seg2_path)
                 seg1 = sitk.GetArrayFromImage(sitk.ReadImage(seg1_path))
                 seg2 = sitk.GetArrayFromImage(sitk.ReadImage(seg2_path))
+                seg1 = seg1.astype(np.int16)
+                seg2 = seg2.astype(np.int16)
                 
                 y = torch.tensor([seg1, seg2])
             else:
@@ -708,7 +710,7 @@ async def create_report(request: ReportRequest):
                 },
                 dataset_name=request.dataset_names[i],
             )
-            
+                     
         if "corticoids" in request.mappings[i].values():
             report.add_metric(
                 name=f"variety_corticoids",
@@ -769,9 +771,7 @@ async def create_report(request: ReportRequest):
                 dataset_name=request.dataset_names[i],
             )
             
-            
-            
-            
+
 
             report.add_metric(
                 name=f"variety_age",
